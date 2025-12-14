@@ -4,24 +4,48 @@ Uživatelské skripty pro rozšíření funkcionality webu XChat.cz
 ## Seznam skriptů
 
 ### `xchat-disable-room-popup.user.js`
-- **Historie místností**  
+- **Historie místností**
 - Skryje vyskakovací okno s potvrzením věku v seznamu místností
 
 ### `xchat-precommander.user.js`
-- **Příkazy do místností**  
-- Přidá nové příkazy do místnosti:
-  * `/note nick poznámka` - Nová poznámka pro uživatele
-  * `/unnote nick` - Odebrání poznámky
+- **Příkazy do místností (Modchat / textpageng)**
+- Rozšiřuje příkazový systém v místnosti o administrátorské a uživatelské příkazy.
+- Skript se aktivuje pouze na textovém vstupu místnosti a funguje i při reloadu iframe.
 
+#### Podporované příkazy
 
-## Instalace
+##### Poznámky
+- `/note nick [poznámka]`  
+  Uloží poznámku k uživateli.  
+  Poznámka je volitelná, nick je povinný.
 
-K používání uživatelských skriptů je nutné mít nainstalovaný doplněk pro prohlížeč:
+- `/unnote nick`  
+  Odebere poznámku k uživateli.
 
-- **Mozilla Firefox**: [Greasemonkey](https://addons.mozilla.org/en-US/firefox/addon/greasemonkey/)  
-- **Google Chrome, Opera**: [Tampermonkey](https://www.tampermonkey.net/)
+##### Informace o uživateli
+- `/showip nick`  
+  Zjistí a vypíše IP adresu a doménu/hostname uživatele.  
+  Informace jsou získány z administrace XChat (IP extended).
 
-Poté stačí kliknout na soubor `.user.js` v tomto repozitáři a potvrdit instalaci v doplňku.
+##### Moderace – blokace
+- `/ban nick důvod`  
+  Zablokuje uživatele:
+  - blokace vždy na **1 rok**
+  - sankce: **kompletní blokace (sanction_8)**
+  - `user_description` je pevně:
+    > Založení nového účtu za účelem obcházení blokace na jiném účtu
+  - jako admin je použit aktuální nick uživatele
+  - room ID (RID) je vždy převzato z aktuální místnosti
 
-Autor a maintainer: [Jan Elznic](https://janelznic.cz) (Elza) <jan@elznic.com>
+- `/unban nick`  
+  Odblokuje uživatele:
+  - zjistí UID uživatele
+  - vyhledá všechny aktivní blokace
+  - všechny aktivní blokace odstraní
 
+##### Moderace – mazání textů
+- `/clearnick nick`  
+  Smaže všechny texty daného uživatele (cleartext).
+
+#### Výstupy
+- Veškeré odpovědi skriptu jsou odesílány zpět do místnosti ve tvaru:
