@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         XChat Modchat Commands
 // @namespace    xchat-modchat-commands
-// @version      1.4.0
+// @version      1.4.1
 // @match        https://www.xchat.cz/*/modchat?op=textpageng*
 // @match        https://www.xchat.cz/*/modchat
 // @run-at       document-end
@@ -85,26 +85,81 @@
 		return new DOMParser().parseFromString(String(html || ''), 'text/html');
 	}
 
-	/* ---------------- notes: save / remove (kept as you provided) ---------------- */
+	/* ---------------- helpers: ISO-8859-2 form encoding (for POST bodies) ---------------- */
+
+	const ISO_8859_2_CHAR_TO_BYTE = {
+		'Á': 0xC1, 'Č': 0xC8, 'Ď': 0xCF, 'É': 0xC9, 'Ě': 0xCC, 'Í': 0xCD, 'Ň': 0xD2, 'Ó': 0xD3, 'Ř': 0xD8,
+		'Š': 0xA9, 'Ť': 0xAB, 'Ú': 0xDA, 'Ů': 0xD9, 'Ý': 0xDD, 'Ž': 0xAE,
+		'á': 0xE1, 'č': 0xE8, 'ď': 0xEF, 'é': 0xE9, 'ě': 0xEC, 'í': 0xED, 'ň': 0xF2, 'ó': 0xF3, 'ř': 0xF8,
+		'š': 0xB9, 'ť': 0xBB, 'ú': 0xFA, 'ů': 0xF9, 'ý': 0xFD, 'ž': 0xBE,
+	};
+
+	function toIso88592Bytes(str) {
+		const out = [];
+		for (const ch of String(str || '')) {
+			const cp = ch.codePointAt(0);
+			if (typeof cp !== 'number') continue;
+
+			if (cp <= 0x7F) {
+				out.push(cp);
+				continue;
+			}
+
+			if (cp <= 0xFF) {
+				out.push(cp);
+				continue;
+			}
+
+			const mapped = ISO_8859_2_CHAR_TO_BYTE[ch];
+			out.push(typeof mapped === 'number' ? mapped : 0x3F); // '?'
+		}
+		return out;
+	}
+
+	function formUrlEncodeIso88592(fields) {
+		const isUnreserved = (b) =>
+			(b >= 0x41 && b <= 0x5A) ||
+			(b >= 0x61 && b <= 0x7A) ||
+			(b >= 0x30 && b <= 0x39) ||
+			b === 0x2D || b === 0x5F || b === 0x2E || b === 0x7E;
+
+		const encBytes = (bytes) => {
+			let s = '';
+			for (const b of bytes) {
+				if (isUnreserved(b)) s += String.fromCharCode(b);
+				else if (b === 0x20) s += '+';
+				else s += '%' + b.toString(16).toUpperCase().padStart(2, '0');
+			}
+			return s;
+		};
+
+		const parts = [];
+		for (const [k, v] of Object.entries(fields || {})) {
+			parts.push(encBytes(toIso88592Bytes(k)) + '=' + encBytes(toIso88592Bytes(v)));
+		}
+		return parts.join('&');
+	}
+
+	/* ---------------- notes: save / remove ---------------- */
 
 	async function saveNote(prefix, targetNick, description) {
 		const urlEdit = `${location.origin}/${prefix}/notes/edit.php`;
 
-		const body = new URLSearchParams({
+		const fields = {
 			pop: '',
 			page: '1',
 			n_about: targetNick,
 			n_comment: description || '',
 			n_enter: 'on',
 			btn_change: 'Uložit',
-		});
+		};
 
 		let res;
 		try {
 			res = await fetch(urlEdit, {
 				method: 'POST',
-				headers: { 'content-type': 'application/x-www-form-urlencoded' },
-				body: body.toString(),
+				headers: { 'content-type': 'application/x-www-form-urlencoded; charset=ISO-8859-2' },
+				body: formUrlEncodeIso88592(fields),
 				credentials: 'include',
 			});
 		} catch (err) {
@@ -211,7 +266,7 @@
 		return { ok: true };
 	}
 
-	/* ---------------- admin HTTP helpers (no custom encoding added) ---------------- */
+	/* ---------------- admin HTTP helpers ---------------- */
 
 	async function httpGetIso(url) {
 		let res;
@@ -227,13 +282,13 @@
 	}
 
 	async function httpPostFormIsoRead(url, fields) {
-		const body = new URLSearchParams(fields || {}).toString();
+		const body = formUrlEncodeIso88592(fields || {});
 
 		let res;
 		try {
 			res = await fetch(url, {
 				method: 'POST',
-				headers: { 'content-type': 'application/x-www-form-urlencoded' },
+				headers: { 'content-type': 'application/x-www-form-urlencoded; charset=ISO-8859-2' },
 				body,
 				credentials: 'include',
 			});
@@ -251,7 +306,6 @@
 	async function getUidByNick(prefix, rid, nick) {
 		const url = `${location.origin}/${prefix}/admin/ak_ext/?sent=0&id_room=${encodeURIComponent(String(rid))}`;
 
-		// Server expects ISO in PHP version; we keep original JS behavior (no custom encoding).
 		const post = {
 			nick: String(nick || ''),
 			id_room: String(rid || ''),
@@ -263,7 +317,6 @@
 
 		const doc = parseHtml(res.body);
 
-		// Find row: <tr><td><strong>Nick:</strong></td><td>Nick (12345)</td>...
 		const rows = [...doc.querySelectorAll('tr')];
 		for (const tr of rows) {
 			const strong = tr.querySelector('td strong');
@@ -301,7 +354,6 @@
 			const strongs = [...doc.querySelectorAll('strong')];
 			const s = strongs.find((x) => String(x.textContent || '').trim() === label);
 			if (!s) return '';
-			// text node after <strong>Label</strong> : value
 			let txt = '';
 			for (const node of s.parentNode.childNodes) {
 				if (node === s) continue;
@@ -327,7 +379,6 @@
 	}
 
 	function dateParts(dt) {
-		// local time (Prague)
 		return {
 			day: String(dt.getDate()).padStart(2, '0'),
 			month: String(dt.getMonth() + 1).padStart(2, '0'),
@@ -338,7 +389,6 @@
 	}
 
 	async function fetchBlacklistIds(prefix, uid, history) {
-		// history: -1 only active, 1 history
 		const baseUrl = `${location.origin}/${prefix}/admin/blacklist/black-index.phtml`;
 
 		const ids = [];
@@ -434,7 +484,6 @@
 			isNewRecord: '1',
 			_Submit: 'Uložit',
 
-			// sanctions
 			sanction_8: 'on',
 		};
 
@@ -578,7 +627,7 @@
 
 			// Only intercept known commands.
 			const known = new Set(['note', 'unnote', 'showip', 'ban', 'unban', 'clearnick']);
-			if (!known.has(parsed.cmd)) return; // important: unknown commands must submit normally
+			if (!known.has(parsed.cmd)) return; // unknown commands must submit normally
 
 			e.preventDefault();
 			e.stopImmediatePropagation();
@@ -593,12 +642,7 @@
 				else if (parsed.cmd === 'unban') result = await handleUnban(prefix, rid, parsed.args);
 				else if (parsed.cmd === 'clearnick') result = await handleClearNick(prefix, parsed.args);
 
-				if (result && result.message) {
-					msg.value = result.message;
-				} else {
-					msg.value = buildPm('Neznámá chyba při zpracování příkazu');
-				}
-
+				msg.value = (result && result.message) ? result.message : buildPm('Neznámá chyba při zpracování příkazu');
 				nativeSubmit(form);
 			})().catch((err) => {
 				msg.value = buildPm(`Chyba při zpracování příkazu: ${String(err && err.message ? err.message : err)}`);
