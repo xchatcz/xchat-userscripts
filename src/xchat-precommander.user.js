@@ -1,115 +1,81 @@
 // ==UserScript==
-// @name         XChat Modchat Commands (textpageng)
+// @name         XChat Modchat Commands
 // @namespace    xchat-modchat-commands
-// @version      1.2.0
-// @description  Adds /note and /unnote command handling in modchat textpageng form (async save/delete + feedback, ISO-8859-2 aware)
-// @match        https://www.xchat.cz/*
+// @version      1.3.3
+// @match        https://www.xchat.cz/*/modchat*
 // @run-at       document-end
 // @grant        none
 // ==/UserScript==
 
-(() => {
+(function () {
 	'use strict';
 
-	function isTargetPage() {
-		try {
-			const url = new URL(location.href);
-			return url.pathname.endsWith('/modchat') && url.searchParams.get('op') === 'textpageng';
-		} catch {
-			return false;
-		}
+	const msg = document.getElementById('msg');
+	if (!msg) {
+		return;
 	}
 
-	function getNickFromForm(form) {
+	const form = document.querySelector('form[name="f"]');
+	if (!form) return;
+
+	// Must be the text input page (works for both GET ?op=textpageng and POST without query)
+	const opField = form.querySelector('input[name="op"]');
+	if (!opField || (opField.value || '').toLowerCase() !== 'textpageng') return;
+
+	function getCurrentUserNick() {
 		const strong = form.querySelector('strong');
-		if (!strong) return '';
-		return (strong.textContent || '').replace(/:\s*$/, '').trim();
+		return strong ? strong.textContent.replace(/:\s*$/, '').trim() : '';
 	}
 
 	function parseCommand(text) {
 		const t = (text || '').trim();
 		if (!t.startsWith('/')) return null;
 
-		const m = t.match(/^\/([a-zA-Z0-9_-]+)(?:\s+([\s\S]*))?$/);
+		const m = t.match(/^\/(\S+)(?:\s+(.*))?$/);
 		if (!m) return null;
 
-		return { cmd: (m[1] || '').toLowerCase(), argsText: (m[2] || '').trim() };
+		return {
+			cmd: (m[1] || '').toLowerCase(),
+			args: (m[2] || '').trim(),
+		};
 	}
 
-	function parseNoteArgs(argsText) {
-		// /note <nick> [description...]
-		const raw = (argsText || '').trim();
-		if (!raw) return { nick: '', description: '' };
-
-		const m = raw.match(/^(\S+)(?:\s+([\s\S]+))?$/);
-		if (!m) return { nick: '', description: '' };
-
-		const nick = (m[1] || '').trim();
-		const description = (m[2] || '').trim(); // optional
-		return { nick, description };
+	function nativeSubmit() {
+		HTMLFormElement.prototype.submit.call(form);
 	}
 
-	function parseUnnoteArgs(argsText) {
-		// /unnote <nick>
-		const raw = (argsText || '').trim();
-		if (!raw) return { nick: '' };
-
-		const m = raw.match(/^(\S+)/);
-		if (!m) return { nick: '' };
-
-		return { nick: (m[1] || '').trim() };
-	}
-
-	function getPrefixFromForm(form) {
-		// form action: "/~$.../modchat" => prefix "~$..."
+	function getPrefixFromForm() {
 		try {
-			const actionAttr = form.getAttribute('action') || '';
-			const actionUrl = new URL(actionAttr, location.origin);
-			return actionUrl.pathname.split('/').filter(Boolean)[0] || '';
+			const action = new URL(form.action, location.origin);
+			return action.pathname.split('/').filter(Boolean)[0] || '';
 		} catch {
 			return '';
 		}
 	}
 
-	function getNotesEditUrl(form) {
-		const prefix = getPrefixFromForm(form);
-		return prefix ? `${location.origin}/${prefix}/notes/edit.php` : `${location.origin}/notes/edit.php`;
-	}
-
-	function getNotesListBaseUrl(form) {
-		const prefix = getPrefixFromForm(form);
-		return prefix ? `${location.origin}/${prefix}/notes/` : `${location.origin}/notes/`;
-	}
-
 	async function decodeIso88592(res) {
 		const buf = await res.arrayBuffer();
-		const decoder = new TextDecoder('iso-8859-2');
-		return decoder.decode(buf);
+		return new TextDecoder('iso-8859-2').decode(buf);
 	}
 
-	function parseHtml(html) {
-		return new DOMParser().parseFromString(html, 'text/html');
-	}
+	async function saveNote(targetNick, description) {
+		const prefix = getPrefixFromForm();
+		const urlEdit = `${location.origin}/${prefix}/notes/edit.php`;
 
-	async function saveNote(form, nick, description) {
-		const url = getNotesEditUrl(form);
-
-		const body = new URLSearchParams();
-		body.set('pop', '');
-		body.set('page', '1');
-		body.set('n_about', nick);
-		body.set('n_comment', description || '');
-		body.set('n_enter', 'on');
-		body.set('btn_change', 'Uložit');
+		const body = new URLSearchParams({
+			pop: '',
+			page: '1',
+			n_about: targetNick,
+			n_comment: description || '',
+			n_enter: 'on',
+			btn_change: 'Uložit',
+		});
 
 		let res;
 		try {
-			res = await fetch(url, {
+			res = await fetch(urlEdit, {
 				method: 'POST',
-				headers: {
-					'content-type': 'application/x-www-form-urlencoded',
-					'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-				},
+				headers: { 'content-type': 'application/x-www-form-urlencoded' },
 				body: body.toString(),
 				credentials: 'include',
 			});
@@ -120,47 +86,29 @@
 		if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
 
 		const html = await decodeIso88592(res);
-		if (!html.includes('Poznámka vložena.')) {
-			return { ok: false, error: 'Nepotvrzeno serverem' };
-		}
-
-		return { ok: true };
+		const ok = html.includes('Poznámka vložena.');
+		return ok ? { ok: true } : { ok: false, error: 'Nepotvrzeno serverem' };
 	}
 
-	function extractMaxPageFromNotesDoc(doc) {
-		let maxPage = 1;
+	function extractMaxPage(doc) {
+		let max = 1;
 		const links = doc.querySelectorAll('#mn a[href*="page="]');
 		for (const a of links) {
 			const href = a.getAttribute('href') || '';
 			const m = href.match(/[?&]page=(\d+)/);
 			if (m) {
 				const n = parseInt(m[1], 10);
-				if (!Number.isNaN(n) && n > maxPage) maxPage = n;
+				if (!Number.isNaN(n) && n > max) max = n;
 			}
 		}
-		return maxPage;
+		return max;
 	}
 
 	function findDeleteHrefForNick(doc, nick) {
-		// Find "edit.php?n_about=<nick>" and then the "smazat" link in the same row/container
-		const escaped = CSS.escape(nick);
-		const editLink = doc.querySelector(`a[href*="edit.php"][href*="n_about=${encodeURIComponent(nick)}"], a[href*="edit.php"][href*="n_about=${escaped}"]`);
+		const nickAnchor = [...doc.querySelectorAll('#mn a')].find((a) => (a.textContent || '').trim() === nick);
+		if (!nickAnchor) return '';
 
-		// Fallback: match by visible nick in profile link text
-		let anchor = editLink;
-		if (!anchor) {
-			const profileLinks = doc.querySelectorAll('a');
-			for (const a of profileLinks) {
-				if ((a.textContent || '').trim() === nick) {
-					anchor = a;
-					break;
-				}
-			}
-		}
-
-		if (!anchor) return '';
-
-		const row = anchor.closest('.notesl') || anchor.closest('div');
+		const row = nickAnchor.closest('.notesl');
 		if (!row) return '';
 
 		const del = row.querySelector('a[href*="del="]');
@@ -168,108 +116,72 @@
 	}
 
 	function notesDocContainsNick(doc, nick) {
-		const links = doc.querySelectorAll('#mn a');
-		for (const a of links) {
-			if ((a.textContent || '').trim() === nick) return true;
-		}
-		return false;
+		return [...doc.querySelectorAll('#mn a')].some((a) => (a.textContent || '').trim() === nick);
 	}
 
-	async function unnote(form, nick) {
-		const baseUrl = getNotesListBaseUrl(form);
+	async function removeNote(targetNick) {
+		const prefix = getPrefixFromForm();
+		const baseUrl = `${location.origin}/${prefix}/notes/`;
 
 		const fetchPage = async (page) => {
-			const url = new URL(baseUrl);
-			url.searchParams.set('page', String(page));
-
 			let res;
 			try {
-				res = await fetch(url.toString(), {
-					method: 'GET',
-					headers: { 'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
-					credentials: 'include',
-				});
+				res = await fetch(`${baseUrl}?page=${page}`, { credentials: 'include' });
 			} catch (err) {
 				return { ok: false, error: `Network error: ${String(err && err.message ? err.message : err)}` };
 			}
-
 			if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
 
 			const html = await decodeIso88592(res);
-			return { ok: true, url: url.toString(), doc: parseHtml(html), html };
+			const doc = new DOMParser().parseFromString(html, 'text/html');
+			return { ok: true, doc };
 		};
 
-		// Load first page to get pagination range
 		const first = await fetchPage(1);
 		if (!first.ok) return first;
 
-		const maxPage = extractMaxPageFromNotesDoc(first.doc);
+		const maxPage = extractMaxPage(first.doc);
 
-		let deleteHref = findDeleteHrefForNick(first.doc, nick);
-		let deletePageUrl = first.url;
+		let deleteHref = findDeleteHrefForNick(first.doc, targetNick);
+		let foundOnPage = 1;
 
 		if (!deleteHref && maxPage > 1) {
 			for (let p = 2; p <= maxPage; p++) {
 				const pageRes = await fetchPage(p);
 				if (!pageRes.ok) return pageRes;
 
-				deleteHref = findDeleteHrefForNick(pageRes.doc, nick);
+				deleteHref = findDeleteHrefForNick(pageRes.doc, targetNick);
 				if (deleteHref) {
-					deletePageUrl = pageRes.url;
+					foundOnPage = p;
 					break;
 				}
 			}
 		}
 
-		if (!deleteHref) {
-			return { ok: false, error: 'Nick nebyl v Poznámkách nalezen' };
-		}
+		if (!deleteHref) return { ok: false, error: 'Nick nebyl v Poznámkách nalezen' };
 
-		const deleteUrl = new URL(deleteHref, deletePageUrl).toString();
+		const deleteUrl = new URL(deleteHref, `${baseUrl}?page=${foundOnPage}`).toString();
 
 		let delRes;
 		try {
-			delRes = await fetch(deleteUrl, {
-				method: 'GET',
-				headers: { 'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
-				credentials: 'include',
-			});
+			delRes = await fetch(deleteUrl, { credentials: 'include' });
 		} catch (err) {
 			return { ok: false, error: `Network error: ${String(err && err.message ? err.message : err)}` };
 		}
 
 		if (!delRes.ok) return { ok: false, error: `HTTP ${delRes.status}` };
 
-		// Try to confirm by checking the returned page doesn't contain the nick anymore
 		const delHtml = await decodeIso88592(delRes);
-		const delDoc = parseHtml(delHtml);
+		const delDoc = new DOMParser().parseFromString(delHtml, 'text/html');
 
-		if (notesDocContainsNick(delDoc, nick)) {
-			// Could be on different page after deletion; do one refetch of the page we deleted from
-			const refetch = await fetch(deletePageUrl, {
-				method: 'GET',
-				headers: { 'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
-				credentials: 'include',
-			}).then(async (r) => {
-				if (!r.ok) return null;
-				const h = await decodeIso88592(r);
-				return parseHtml(h);
-			}).catch(() => null);
-
-			if (refetch && notesDocContainsNick(refetch, nick)) {
+		if (notesDocContainsNick(delDoc, targetNick)) {
+			const check = await fetchPage(foundOnPage);
+			if (check.ok && notesDocContainsNick(check.doc, targetNick)) {
 				return { ok: false, error: 'Smazání se nepotvrdilo' };
 			}
 		}
 
 		return { ok: true };
-	}
-
-	function buildSuccessNoteMessage(currentUserNick, savedNick) {
-		return `/m ${currentUserNick} Uživatel ${savedNick} uložen do Poznámek`;
-	}
-
-	function buildSuccessUnnoteMessage(currentUserNick, removedNick) {
-		return `/m ${currentUserNick} Uživatel ${removedNick} odebrán z Poznámek`;
 	}
 
 	function buildMissingNickNoteMessage(currentUserNick) {
@@ -285,80 +197,71 @@
 		return `/m ${currentUserNick} Chyba při ${actionLabel}${target}: ${error}`;
 	}
 
-	function nativeSubmit(form) {
-		HTMLFormElement.prototype.submit.call(form);
+	function buildSuccessNoteMessage(currentUserNick, savedNick) {
+		return `/m ${currentUserNick} Uživatel ${savedNick} uložen do Poznámek`;
 	}
 
-	function hookForm(form) {
-		if (form.dataset.xstatNoteHooked === '1') return;
-		form.dataset.xstatNoteHooked = '1';
+	function buildSuccessUnnoteMessage(currentUserNick, removedNick) {
+		return `/m ${currentUserNick} Uživatel ${removedNick} odebrán z Poznámek`;
+	}
 
-		const msg = form.querySelector('#msg');
-		if (!msg) return;
+	// Idempotent hook for this document instance
+	if (form.dataset.xstatNoteHooked === '1') return;
+	form.dataset.xstatNoteHooked = '1';
 
-		const currentUserNick = getNickFromForm(form);
+	const userNick = getCurrentUserNick();
 
-		form.addEventListener('submit', (e) => {
-			const original = msg.value || '';
-			const parsed = parseCommand(original);
-			if (!parsed) return;
+	form.addEventListener('submit', (e) => {
+		const parsed = parseCommand(msg.value);
+		if (!parsed) return;
+		if (parsed.cmd !== 'note' && parsed.cmd !== 'unnote') return;
 
-			if (parsed.cmd !== 'note' && parsed.cmd !== 'unnote') return;
+		e.preventDefault();
+		e.stopImmediatePropagation();
 
-			e.preventDefault();
-			e.stopImmediatePropagation();
+		(async () => {
+			if (parsed.cmd === 'note') {
+				const raw = parsed.args || '';
+				const m = raw.match(/^(\S+)(?:\s+([\s\S]+))?$/);
 
-			(async () => {
-				if (parsed.cmd === 'note') {
-					const args = parseNoteArgs(parsed.argsText);
+				const targetNick = m ? (m[1] || '').trim() : '';
+				const description = m ? (m[2] || '').trim() : '';
 
-					if (!args.nick) {
-						msg.value = buildMissingNickNoteMessage(currentUserNick);
-						nativeSubmit(form);
-						return;
-					}
-
-					const result = await saveNote(form, args.nick, args.description);
-
-					msg.value = result.ok
-						? buildSuccessNoteMessage(currentUserNick, args.nick)
-						: buildErrorMessage(currentUserNick, 'ukládání poznámky', args.nick, result.error || 'Unknown error');
-
-					nativeSubmit(form);
+				if (!targetNick) {
+					msg.value = buildMissingNickNoteMessage(userNick);
+					nativeSubmit();
 					return;
 				}
 
-				// unnote
-				const args = parseUnnoteArgs(parsed.argsText);
-
-				if (!args.nick) {
-					msg.value = buildMissingNickUnnoteMessage(currentUserNick);
-					nativeSubmit(form);
-					return;
-				}
-
-				const result = await unnote(form, args.nick);
+				const result = await saveNote(targetNick, description);
 
 				msg.value = result.ok
-					? buildSuccessUnnoteMessage(currentUserNick, args.nick)
-					: buildErrorMessage(currentUserNick, 'odebírání poznámky', args.nick, result.error || 'Unknown error');
+					? buildSuccessNoteMessage(userNick, targetNick)
+					: buildErrorMessage(userNick, 'ukládání poznámky', targetNick, result.error || 'Unknown error');
 
-				nativeSubmit(form);
-			})().catch((err) => {
-				msg.value = buildErrorMessage(currentUserNick, 'zpracování příkazu', '', `Unhandled error: ${String(err)}`);
-				nativeSubmit(form);
-			});
-		}, true);
-	}
+				nativeSubmit();
+				return;
+			}
 
-	function findAndHook() {
-		if (!isTargetPage()) return;
-		const form = document.querySelector('form[name="f"][action*="/modchat"]');
-		if (form) hookForm(form);
-	}
+			// unnote
+			const targetNick = (parsed.args || '').trim();
+			if (!targetNick) {
+				msg.value = buildMissingNickUnnoteMessage(userNick);
+				nativeSubmit();
+				return;
+			}
 
-	findAndHook();
+			const result = await removeNote(targetNick);
 
-	const mo = new MutationObserver(() => findAndHook());
-	mo.observe(document.documentElement, { childList: true, subtree: true });
+			msg.value = result.ok
+				? buildSuccessUnnoteMessage(userNick, targetNick)
+				: buildErrorMessage(userNick, 'odebírání poznámky', targetNick, result.error || 'Unknown error');
+
+			nativeSubmit();
+		})().catch((err) => {
+			msg.value = buildErrorMessage(userNick, 'zpracování příkazu', '', `Unhandled error: ${String(err)}`);
+			nativeSubmit();
+		});
+	}, true);
+
 })();
