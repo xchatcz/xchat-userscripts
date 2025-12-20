@@ -12,6 +12,10 @@ Uživatelské skripty pro rozšíření funkcionality webu XChat.cz
 - Rozšiřuje příkazový systém v místnosti o administrátorské a uživatelské příkazy.
 - Skript se aktivuje pouze na textovém vstupu místnosti a funguje i při reloadu iframe.
 
+### `xchat-room-sidebar-hide.user.js`
+- **Skryje sidebar v místnosti**
+- Skryje černý rozevírací sidebar v místnosti
+
 #### Podporované příkazy
 
 ##### Poznámky
